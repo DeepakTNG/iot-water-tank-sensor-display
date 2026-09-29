@@ -1,5 +1,6 @@
 // Firmware Version: 0.1.6
 // NodeMCU ESP8266 IoT Water Level Display Firmware
+// CHANGE: This flag MUST be defined BEFORE including WiFiManager.h to unlock integrated OTA!
 
 #include <ESP8266WiFi.h>
 #include <ESP8266HTTPClient.h>
@@ -12,9 +13,6 @@
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
-#include <ESP8266mDNS.h>
-#include <ESP8266HTTPUpdateServer.h>
-#include <ESP8266WebServer.h>
 
 // --- OLED Screen Configuration (7-Pin SPI Layout) ---
 #define SCREEN_WIDTH 128
@@ -36,10 +34,6 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &SPI, OLED_DC, OLED_RESET,
 #define VDIV_RATIO        5.5454f  // (100k + 22k) / 22k
 #define ADC_REF_V         3.3f
 #define ADC_MAX           1023.0f
-
-// --- OTA Web Update Server ---
-ESP8266WebServer otaServer(8080);
-ESP8266HTTPUpdateServer httpUpdater;
 
 // --- Custom Parameter Containers for WiFiManager ---
 char api_endpoint[100]        = "https://thesoft.in";
@@ -66,6 +60,18 @@ unsigned long lastDisplayWake  = 0;
 
 // --- API Fetch Timing ---
 unsigned long lastApiCall      = 0;  // Timestamp of last successful fetch cycle
+
+
+// Forward declarations
+void fetchTankData();
+void wakeDisplay();
+void drawScreen();
+void drawWiFiErrorScreen();
+void updateNetworkSignal();
+void readESPBattery();
+void checkPortalButton();
+void startWiFiPortal();
+
 
 // -------------------------------------------------------
 // HELPERS
@@ -132,6 +138,7 @@ void setup() {
   Serial.begin(115200);
   delay(100);
   Serial.println("\n--- NodeMCU Water Level Display v0.1.5 ---");
+  Serial.println("upload though web");
 
   pinMode(PORTAL_BUTTON_PIN, INPUT_PULLUP);
 
@@ -195,13 +202,13 @@ void setup() {
 
     if (WiFi.status() == WL_CONNECTED) {
       Serial.println("Connected to Wi-Fi!");
-      // Start mDNS and OTA HTTP update server
-      if (MDNS.begin("tank-display")) {
-        Serial.println("mDNS started: http://tank-display.local:8080/update");
-      }
-      httpUpdater.setup(&otaServer, "/update");
-      otaServer.begin();
-      Serial.println("OTA update server started on port 8080.");
+      // CHANGE 1: Instant API Call on successful Wi-Fi connection at startup
+      updateNetworkSignal();
+      readESPBattery();
+      fetchTankData();
+      lastApiCall = millis();
+      wakeDisplay();
+      drawScreen();
     } else {
       Serial.println("Wi-Fi connection timed out. Entering loop.");
     }
@@ -213,12 +220,6 @@ void setup() {
 // -------------------------------------------------------
 
 void loop() {
-  // Handle OTA update server requests
-  if (WiFi.status() == WL_CONNECTED) {
-    otaServer.handleClient();
-    MDNS.update();
-  }
-
   checkPortalButton();
 
   unsigned long nowMs           = millis();
@@ -257,10 +258,6 @@ void loop() {
 
   // 1-second non-blocking tick — keeps OTA server and button responsive across long intervals
   for (int i = 0; i < 10; i++) {
-    if (WiFi.status() == WL_CONNECTED) {
-      otaServer.handleClient();
-      MDNS.update();
-    }
     if (digitalRead(PORTAL_BUTTON_PIN) == LOW) {
       checkPortalButton();
       break;
@@ -322,6 +319,24 @@ void checkPortalButton() {
       delay(1000);
 
       startWiFiPortal();
+    } else {
+      // CHANGE 2: Action for Short Press (Under 5 seconds) -> Instant API Call
+      if (WiFi.status() == WL_CONNECTED) {
+        display.clearDisplay();
+        display.setCursor(0, 20);
+        display.setTextSize(1);
+        display.println("Refreshing data...");
+        display.display();
+        
+        updateNetworkSignal();
+        readESPBattery();
+        fetchTankData();
+        lastApiCall = millis(); 
+        
+        drawScreen();
+      } else {
+        Serial.println("Cannot refresh API: Wi-Fi disconnected.");
+      }
     }
   }
 }
