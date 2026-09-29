@@ -1,4 +1,4 @@
-// Firmware Version: 0.1.3
+// Firmware Version: 0.1.4
 // NodeMCU ESP8266 IoT Water Level Display Firmware
 
 #include <ESP8266WiFi.h>
@@ -41,6 +41,7 @@ float water_liters = 0.0;
 float raw_battery_voltage = 0.0;
 int battery_pct = 0;
 int rssi_signal = 0;
+bool api_success = false;
 
 void saveConfigCallback() {
   shouldSaveConfig = true;
@@ -307,26 +308,59 @@ void fetchTankData() {
       // Calculate battery percentage: Constrain 18650 cell between 3.2V (0%) and 4.2V (100%)
       float constrained_v = constrain(raw_battery_voltage, 3.2, 4.2);
       battery_pct = (int)(((constrained_v - 3.2) / 1.0) * 100.0);
+      api_success = true; // API call and JSON parse succeeded
+    } else {
+      api_success = false; // JSON parse failed
+      Serial.println("API JSON parse error.");
     }
+  } else {
+    api_success = false; // HTTP call failed or non-200 response
+    Serial.print("API HTTP error code: ");
+    Serial.println(httpCode);
   }
   http.end();
+}
+
+// Draw WiFi error 'X' icon in status bar area (X=0, Y=0 region)
+void drawWiFiErrorIcon(int xOffset) {
+  // Draw a small 'X' using two diagonal lines in a 9x9 box
+  display.drawLine(xOffset,     2, xOffset + 8, 10, SSD1306_WHITE);
+  display.drawLine(xOffset + 8, 2, xOffset,     10, SSD1306_WHITE);
+}
+
+// Draw API status icon: checkmark on success, '!' exclamation on failure
+void drawApiStatusIcon(int xOffset) {
+  if (api_success) {
+    // Tiny checkmark: angled tick shape
+    display.drawLine(xOffset,     6, xOffset + 2, 9,  SSD1306_WHITE);
+    display.drawLine(xOffset + 2, 9, xOffset + 6, 3,  SSD1306_WHITE);
+  } else {
+    // Exclamation '!': vertical bar + dot
+    display.drawLine(xOffset + 3, 2, xOffset + 3, 7, SSD1306_WHITE);
+    display.drawPixel(xOffset + 3, 10, SSD1306_WHITE);
+  }
 }
 
 void drawWiFiErrorScreen() {
   display.clearDisplay();
   display.setTextColor(SSD1306_WHITE);
-  
-  display.setTextSize(2);
-  display.setCursor(0, 0);
-  display.println("Wi-Fi Error");
-  
+
+  // Status bar: show WiFi error X icon in top-left
+  drawWiFiErrorIcon(2);
+
+  // API icon also shows failure when WiFi is down
+  drawApiStatusIcon(18);
+
+  // Separator line
+  display.drawLine(0, 12, 128, 12, SSD1306_WHITE);
+
   display.setTextSize(1);
-  display.setCursor(0, 24);
+  display.setCursor(0, 16);
+  display.println("Wi-Fi Error!");
   display.println("Failed to connect.");
   display.println("Check your router.");
   display.println("");
-  display.println("Hold config button");
-  display.println("5 sec to reconfigure.");
+  display.println("Hold btn 5s to reset.");
   
   display.display();
 }
@@ -335,17 +369,27 @@ void drawScreen() {
   display.clearDisplay();
 
   // --- TOP STATUS BAR LAYER (Y=0 to Y=12) ---
-  // Left Aligned: Multi-bar mobile-style RSSI signal strength meter
-  for (int i = 0; i < 4; i++) {
-    int barHeight = (i + 1) * 2;
-    int xPos = 2 + (i * 3);
-    int yPos = 10 - barHeight;
-    if (i < rssi_signal) {
-      display.fillRect(xPos, yPos, 2, barHeight, SSD1306_WHITE);
-    } else {
-      display.drawRect(xPos, yPos, 2, barHeight, SSD1306_WHITE);
+  // Left Aligned: WiFi signal bars OR error X icon if disconnected
+  if (WiFi.status() == WL_CONNECTED) {
+    // Draw standard 4-bar RSSI signal strength meter
+    for (int i = 0; i < 4; i++) {
+      int barHeight = (i + 1) * 2;
+      int xPos = 2 + (i * 3);
+      int yPos = 10 - barHeight;
+      if (i < rssi_signal) {
+        display.fillRect(xPos, yPos, 2, barHeight, SSD1306_WHITE);
+      } else {
+        display.drawRect(xPos, yPos, 2, barHeight, SSD1306_WHITE);
+      }
     }
+  } else {
+    // WiFi disconnected: draw error X icon instead of signal bars
+    drawWiFiErrorIcon(2);
   }
+
+  // Center: API status icon (checkmark = success, exclamation = failure)
+  // Positioned just to the right of the WiFi signal bars area
+  drawApiStatusIcon(18);
 
   // Right Aligned: Drawn battery icon outline with inner filled block relative to battery %
   display.drawRect(104, 2, 18, 8, SSD1306_WHITE);
